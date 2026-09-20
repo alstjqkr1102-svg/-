@@ -290,7 +290,6 @@ with tab2:
     ax.legend(loc='upper left')
     st.pyplot(fig_mpl)
     plt.close(fig_mpl)
-```어떤 코드나 작성물이 필요한지 구체적인 내용을 알려주시면, 바로 복사해서 사용하실 수 있도록 작성해 드리겠습니다! 
 
 예를 들어 다음과 같이 요청해 주세요:
 * "파이썬으로 간단한 계산기 프로그램 짜줘"
