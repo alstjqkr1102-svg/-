@@ -30,39 +30,45 @@ col_m, col_mu, col_algo, col_btn = st.columns([1.5, 1.5, 3, 2])
 with col_m:
     mass = st.number_input("질량 (kg)", value=1.0, min_value=0.1, step=0.1)
 with col_mu:
-    mu = st.number_input("마찰계수 μ", value=0.05, min_value=0.0, step=0.01)
+    mu = st.number_input("마찰계수 μ", value=0.08, min_value=0.0, step=0.01)
 with col_algo:
     algo_option = st.selectbox(
         "최적화 알고리즘 선택",
         options=[
-            "개선 1: Multi-start SLSQP (다중 초기 경로 탐색)",
-            "개선 2: Differential Evolution (전역 최적화)",
-            "기존: 단일 SLSQP (최단경로 초기값)"
+            "기존 방식: 단일 SLSQP (최단경로 국소 최적점 고착)",
+            "개선 방식 1: Multi-start SLSQP (다중 초기 경로 탐색)",
+            "개선 방식 2: Differential Evolution (전역 최적화)"
         ]
     )
 
 with col_btn:
-    st.write(" ") # 여백
-    run_button = st.button("최적화 실행", type="primary", use_container_width=True)
+    st.write(" ") 
+    run_button = st.button("🚀 최적화 실행", type="primary", use_container_width=True)
 
-# 구 반지름 및 물리 상수 설정
+# 구 반지름 및 물리 상수
 R = 5.0  
 g = 9.81 
-N_POINTS = 20 # 제어점 수
+N_POINTS = 15 # 중간 제어점 개수
 
-# --- Helper Functions ---
-def enforce_sphere_constraint(P_flat):
-    """경로 점들을 구면 표면(반지름 R)으로 정렬"""
-    P = np.array(P_flat).reshape((-1, 3))
-    norms = np.linalg.norm(P, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    P_projected = P * (R / norms)
-    return P_projected
+def project_to_sphere(p):
+    """단일 점 또는 점들의 집합을 반지름 R 구면 위로 투영"""
+    p = np.array(p)
+    if p.ndim == 1:
+        norm = np.linalg.norm(p)
+        return p * (R / norm) if norm > 0 else p
+    else:
+        norms = np.linalg.norm(p, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return p * (R / norms)
 
-def calculate_path_energy(P_flat, xA, yA, zA, xB, yB, zB, m, mu_val):
-    """에너지 계산 함수 (오르막 에너지 + 마찰 에너지)"""
-    P_mid = enforce_sphere_constraint(P_flat)
-    full_path = np.vstack(([xA, yA, zA], P_mid, [xB, yB, zB]))
+# 입력 좌표를 정확히 구면 표면 좌표로 정규화
+ptA = project_to_sphere([xA, yA, zA])
+ptB = project_to_sphere([xB, yB, zB])
+
+def calculate_path_energy(P_flat, pA, pB, m, mu_val):
+    """에너지 계산 (오르막 위치에너지 + 마찰 손실 에너지)"""
+    P_mid = project_to_sphere(np.array(P_flat).reshape((-1, 3)))
+    full_path = np.vstack(([pA], P_mid, [pB]))
     
     climb_energy = 0.0
     friction_energy = 0.0
@@ -78,7 +84,7 @@ def calculate_path_energy(P_flat, xA, yA, zA, xB, yB, zB, m, mu_val):
             
         dz = p2[2] - p1[2]
         
-        # 1. 오르막 에너지
+        # 1. 위치 에너지 (오르막 구간만 추가)
         if dz > 0:
             climb_energy += m * g * dz
             
@@ -91,167 +97,147 @@ def calculate_path_energy(P_flat, xA, yA, zA, xB, yB, zB, m, mu_val):
         N_force = m * g * cos_theta
         friction_energy += mu_val * N_force * ds
         
-    total_energy = climb_energy + friction_energy
-    return total_energy, climb_energy, friction_energy
+    return climb_energy + friction_energy, climb_energy, friction_energy
 
-def get_initial_path(mode="geodesic"):
-    """초기 경로 생성 함수"""
-    t = np.linspace(0, 1, N_POINTS + 2)[1:-1]
+def get_initial_path(pA, pB, mode="geodesic"):
+    """시작점 pA와 도착점 pB를 정확히 잇는 초기 경로 생성"""
+    t = np.linspace(0, 1, N_POINTS + 2)[1:-1] # 양 끝점 제외한 내적점
     
     if mode == "geodesic":
-        x = (1 - t) * xA + t * xB
-        y = (1 - t) * yA + t * yB
-        z = (1 - t) * zA + t * zB
-    elif mode == "horizontal_front":
-        x = (1 - t) * xA + t * xB
-        y = np.sin(np.pi * t) * 4.0
-        z = (1 - t) * zA + t * zB
-    elif mode == "horizontal_back":
-        x = (1 - t) * xA + t * xB
-        y = -np.sin(np.pi * t) * 4.0
-        z = (1 - t) * zA + t * zB
-    else:
-        x = (1 - t) * xA + t * xB
-        y = (1 - t) * yA + t * yB
-        z = (1 - t) * zA + t * zB
+        # pA와 pB를 잇는 직진 선분 생성 후 구면 투영
+        x = (1 - t) * pA[0] + t * pB[0]
+        y = (1 - t) * pA[1] + t * pB[1]
+        z = (1 - t) * pA[2] + t * pB[2]
+    elif mode == "horizontal_detour":
+        # 측면으로 볼록하게 우회하는 경로 생성
+        x = (1 - t) * pA[0] + t * pB[0]
+        y = (1 - t) * pA[1] + t * pB[1] + np.sin(np.pi * t) * 4.0
+        z = (1 - t) * pA[2] + t * pB[2]
 
     P_init = np.column_stack((x, y, z))
-    return enforce_sphere_constraint(P_init).flatten()
+    return project_to_sphere(P_init).flatten()
 
-# --- 최적화 실행 로직 ---
-# 처음 켜졌거나, 버튼을 누르면 연산을 재실행하도록 처리
+# --- 최적화 실행 조건 ---
 if run_button or "best_path_flat" not in st.session_state:
-    with st.spinner("경로 최적화 계산 중... 잠시만 기다려주세요."):
-        # 시작점/도착점 구면 정렬
-        normA = np.linalg.norm([xA, yA, zA])
-        normB = np.linalg.norm([xB, yB, zB])
-        xA_p, yA_p, zA_p = np.array([xA, yA, zA]) * (R / normA) if normA > 0 else (xA, yA, zA)
-        xB_p, yB_p, zB_p = np.array([xB, yB, zB]) * (R / normB) if normB > 0 else (xB, yB, zB)
-
+    with st.spinner("최적 에너지 경로를 계산 중입니다..."):
         def objective(P_flat):
-            tot, _, _ = calculate_path_energy(P_flat, xA_p, yA_p, zA_p, xB_p, yB_p, zB_p, mass, mu)
+            tot, _, _ = calculate_path_energy(P_flat, ptA, ptB, mass, mu)
             return tot
 
-        init_path_geodesic = get_initial_path("geodesic")
-
-        if "기존" in algo_option:
-            # 단일 SLSQP
-            res = minimize(objective, init_path_geodesic, method='SLSQP', options={'maxiter': 300})
+        if "기존 방식" in algo_option:
+            # 단일 SLSQP (직진 경로 초기값)
+            p0 = get_initial_path(ptA, ptB, "geodesic")
+            res = minimize(objective, p0, method='SLSQP', options={'maxiter': 50, 'ftol': 1e-3})
             best_path_flat = res.x
             n_iter = res.nit
         elif "Multi-start" in algo_option:
-            # Multi-start SLSQP
-            candidates = ["geodesic", "horizontal_front", "horizontal_back"]
+            # Multi-start (직진 및 우회 경로 탐색)
+            candidates = ["geodesic", "horizontal_detour"]
             best_val = float('inf')
             best_path_flat = None
             total_nit = 0
             
             for cand in candidates:
-                p0 = get_initial_path(cand)
-                res = minimize(objective, p0, method='SLSQP', options={'maxiter': 200})
+                p0 = get_initial_path(ptA, ptB, cand)
+                res = minimize(objective, p0, method='SLSQP', options={'maxiter': 50, 'ftol': 1e-3})
                 total_nit += res.nit
                 if res.fun < best_val:
                     best_val = res.fun
                     best_path_flat = res.x
             n_iter = total_nit
         else:
-            # Differential Evolution
+            # Differential Evolution (전역 최적화)
             bounds = [(-R, R)] * (N_POINTS * 3)
-            res = differential_evolution(objective, bounds, maxiter=30, popsize=8, seed=42)
+            res = differential_evolution(objective, bounds, maxiter=25, popsize=8, seed=42)
             best_path_flat = res.x
             n_iter = res.nit
 
-        # 결과를 session_state에 보관
+        # 결과 및 상태 세션 저장
         st.session_state["best_path_flat"] = best_path_flat
-        st.session_state["init_path_geodesic"] = init_path_geodesic
+        st.session_state["init_path_geodesic"] = get_initial_path(ptA, ptB, "geodesic")
         st.session_state["n_iter"] = n_iter
-        st.session_state["pts"] = (xA_p, yA_p, zA_p, xB_p, yB_p, zB_p)
+        st.session_state["ptA"] = ptA
+        st.session_state["ptB"] = ptB
 
-# --- 저장된 결과 불러오기 및 계산 ---
+# 세션 데이터 불러오기
 best_path_flat = st.session_state["best_path_flat"]
 init_path_geodesic = st.session_state["init_path_geodesic"]
 n_iter = st.session_state["n_iter"]
-xA_p, yA_p, zA_p, xB_p, yB_p, zB_p = st.session_state["pts"]
+ptA = st.session_state["ptA"]
+ptB = st.session_state["ptB"]
 
-tot_e, climb_e, fric_e = calculate_path_energy(best_path_flat, xA_p, yA_p, zA_p, xB_p, yB_p, zB_p, mass, mu)
+tot_e, climb_e, fric_e = calculate_path_energy(best_path_flat, ptA, ptB, mass, mu)
 
-# --- 2. 상태 메시지 출력 ---
+# --- 2. 결과 상태 출력 ---
 st.success(
     f"Optimization terminated successfully | 반복 {n_iter}회 | "
     f"총 에너지 = {tot_e:.4f} J (오르막 {climb_e:.4f} J, 마찰 {fric_e:.4f} J)"
 )
 
-# --- 3. 3D Plotly 시각화 ---
+# --- 3. Plotly 3D 시각화 ---
 u = np.linspace(0, 2 * np.pi, 40)
 v = np.linspace(0, np.pi, 40)
 x_sphere = R * np.outer(np.cos(u), np.sin(v))
 y_sphere = R * np.outer(np.sin(u), np.sin(v))
 z_sphere = R * np.outer(np.ones(np.size(u)), np.cos(v))
 
-P_init_arr = enforce_sphere_constraint(init_path_geodesic)
-full_init = np.vstack(([xA_p, yA_p, zA_p], P_init_arr, [xB_p, yB_p, zB_p]))
+# 경로 점들을 구면에 맞춘 후 점 A와 B를 양 끝점에 정확히 연결
+P_init_mid = project_to_sphere(np.array(init_path_geodesic).reshape((-1, 3)))
+full_init = np.vstack(([ptA], P_init_mid, [ptB]))
 
-P_opt_arr = enforce_sphere_constraint(best_path_flat)
-full_opt = np.vstack(([xA_p, yA_p, zA_p], P_opt_arr, [xB_p, yB_p, zB_p]))
+P_opt_mid = project_to_sphere(np.array(best_path_flat).reshape((-1, 3)))
+full_opt = np.vstack(([ptA], P_opt_mid, [ptB]))
 
 fig = go.Figure()
 
-# 구면
+# 반투명 구 표면
 fig.add_trace(go.Surface(
     x=x_sphere, y=y_sphere, z=z_sphere,
     colorscale=[[0, '#3366cc'], [1, '#3366cc']],
-    opacity=0.25,
+    opacity=0.2,
     showscale=False,
     hoverinfo='skip'
 ))
 
-# 초기 투영 경로
+# 초기 직진 경로 (기준 점선)
 fig.add_trace(go.Scatter3d(
     x=full_init[:, 0], y=full_init[:, 1], z=full_init[:, 2],
-    mode='lines+markers',
-    line=dict(color='gray', width=4, dash='dash'),
-    marker=dict(size=3, color='black'),
-    name='Initial projected path (초기 투영 경로)'
+    mode='lines',
+    line=dict(color='gray', width=3, dash='dash'),
+    name='Initial Path (초기 직진 경로)'
 ))
 
-# 최적화된 경로
+# 최적화 경로 (실선) - A부터 B까지 완전 연결
 fig.add_trace(go.Scatter3d(
     x=full_opt[:, 0], y=full_opt[:, 1], z=full_opt[:, 2],
     mode='lines+markers',
-    line=dict(color='red', width=6),
-    marker=dict(size=4, color='darkred'),
-    name='Optimized path (최적화된 경로)'
+    line=dict(color='crimson', width=6),
+    marker=dict(size=3, color='red'),
+    name='Optimized Path (최적화 경로)'
 ))
 
-# A (시작점)
+# 시작점 A / 도착점 B 큰 마커
 fig.add_trace(go.Scatter3d(
-    x=[xA_p], y=[yA_p], z=[zA_p],
-    mode='markers',
-    marker=dict(size=10, color='blue', symbol='diamond'),
+    x=[ptA[0]], y=[ptA[1]], z=[ptA[2]],
+    mode='markers+text',
+    marker=dict(size=10, color='blue'),
+    text=["A (시작점)"],
+    textposition="top center",
     name='A (시작점)'
 ))
 
-# B (도착점)
 fig.add_trace(go.Scatter3d(
-    x=[xB_p], y=[yB_p], z=[zB_p],
-    mode='markers',
-    marker=dict(size=10, color='green', symbol='square'),
+    x=[ptB[0]], y=[ptB[1]], z=[ptB[2]],
+    mode='markers+text',
+    marker=dict(size=10, color='green'),
+    text=["B (도착점)"],
+    textposition="top center",
     name='B (도착점)'
 ))
 
 fig.update_layout(
-    title=dict(
-        text="Minimum-energy surface path (구면 표면 최소 에너지 경로)",
-        x=0.5,
-        xanchor='center'
-    ),
-    scene=dict(
-        xaxis=dict(title='X'),
-        yaxis=dict(title='Y'),
-        zaxis=dict(title='Z'),
-        aspectmode='data'
-    ),
-    margin=dict(l=0, r=0, b=0, t=40),
+    scene=dict(xaxis=dict(title='X'), yaxis=dict(title='Y'), zaxis=dict(title='Z'), aspectmode='data'),
+    margin=dict(l=0, r=0, b=0, t=20),
     legend=dict(x=0.02, y=0.98),
     height=650
 )
