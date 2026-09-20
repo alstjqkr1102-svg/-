@@ -13,36 +13,38 @@ G = 9.81
 
 
 # ============================================================
-# 구면 관련 함수
+# 구면 투영
 # ============================================================
 
-def project_to_sphere(p):
-    """임의의 3차원 점을 반지름 R인 구면 위로 투영"""
-    p = np.asarray(p, dtype=float)
-    norm = np.linalg.norm(p)
+def project_to_sphere(point):
+    point = np.asarray(point, dtype=float)
+    norm = np.linalg.norm(point)
 
     if norm < 1e-12:
-        raise ValueError("원점 (0,0,0)은 구면 위의 점으로 투영할 수 없습니다.")
+        raise ValueError(
+            "원점 (0, 0, 0)은 구면 위로 투영할 수 없습니다."
+        )
 
-    return R * p / norm
+    return R * point / norm
 
 
-def cartesian_to_spherical(p):
-    """
-    Cartesian -> spherical
-    phi   : 0 ~ pi
-    theta : -pi ~ pi
-    """
-    x, y, z = p
+# ============================================================
+# Cartesian <-> Spherical
+# ============================================================
 
-    phi = np.arccos(np.clip(z / R, -1.0, 1.0))
+def cartesian_to_spherical(point):
+    x, y, z = point
+
+    phi = np.arccos(
+        np.clip(z / R, -1.0, 1.0)
+    )
+
     theta = np.arctan2(y, x)
 
     return theta, phi
 
 
 def spherical_to_cartesian(theta, phi):
-    """spherical -> Cartesian"""
     x = R * np.sin(phi) * np.cos(theta)
     y = R * np.sin(phi) * np.sin(theta)
     z = R * np.cos(phi)
@@ -50,37 +52,28 @@ def spherical_to_cartesian(theta, phi):
     return np.array([x, y, z])
 
 
-def path_from_angles(A, B, variables):
-    """
-    최적화 변수로부터 전체 경로 생성
+# ============================================================
+# 초기 경로 생성
+# ============================================================
 
-    variables:
-        theta 23개
-        phi   23개
-        uphill auxiliary variables 24개
-    """
+def create_initial_path(A, B):
+    path = []
 
-    intermediate_count = N - 2
+    for t in np.linspace(0.0, 1.0, N):
+        point = A * (1.0 - t) + B * t
+        point = project_to_sphere(point)
+        path.append(point)
 
-    theta = variables[:intermediate_count]
-    phi = variables[
-        intermediate_count:
-        2 * intermediate_count
-    ]
+    return np.array(path)
 
-    points = [A]
 
-    for t, p in zip(theta, phi):
-        points.append(spherical_to_cartesian(t, p))
-
-    points.append(B)
-
-    return np.array(points)
-
+# ============================================================
+# 구면 위 거리
+# ============================================================
 
 def surface_distance(p1, p2):
-    """구면 위 두 점 사이의 최단 호 길이"""
     dot = np.dot(p1, p2) / (R * R)
+
     dot = np.clip(dot, -1.0, 1.0)
 
     angle = np.arccos(dot)
@@ -88,42 +81,78 @@ def surface_distance(p1, p2):
     return R * angle
 
 
-def path_energy(points, mass, mu):
-    """전체 에너지 계산"""
+# ============================================================
+# 에너지 계산
+# ============================================================
 
-    z = points[:, 2]
+def calculate_energy(path, mass, mu):
+
+    z = path[:, 2]
 
     dz = np.diff(z)
 
-    uphill = mass * G * np.sum(np.maximum(dz, 0))
+    # 상승할 때만 위치에너지 증가
+    uphill = (
+        mass
+        * G
+        * np.sum(np.maximum(dz, 0.0))
+    )
 
-    distances = [
-        surface_distance(points[i], points[i + 1])
-        for i in range(len(points) - 1)
-    ]
+    # 구면 위 이동거리
+    distances = []
 
-    friction = mu * mass * G * np.sum(distances)
+    for i in range(N - 1):
+        distances.append(
+            surface_distance(
+                path[i],
+                path[i + 1]
+            )
+        )
+
+    total_distance = np.sum(distances)
+
+    # 마찰 에너지
+    friction = (
+        mu
+        * mass
+        * G
+        * total_distance
+    )
 
     total = uphill + friction
 
-    return total, uphill, friction
+    return total, uphill, friction, total_distance
 
 
 # ============================================================
-# 초기 경로
+# 최적화 변수로부터 경로 생성
 # ============================================================
 
-def create_initial_path(A, B):
-    """
-    A -> B 직선 구간을 N개 점으로 나눈 후
-    각각을 구면 위로 투영
-    """
+def build_path(A, B, variables):
 
-    path = []
+    intermediate_count = N - 2
 
-    for t in np.linspace(0, 1, N):
-        p = A * (1 - t) + B * t
-        path.append(project_to_sphere(p))
+    theta = variables[
+        :intermediate_count
+    ]
+
+    phi = variables[
+        intermediate_count:
+        2 * intermediate_count
+    ]
+
+    path = [A]
+
+    for i in range(intermediate_count):
+
+        point = spherical_to_cartesian(
+            theta[i],
+            phi[i]
+        )
+
+        path.append(point)
+
+    path.append(B)
 
     return np.array(path)
 
@@ -138,25 +167,46 @@ def optimize_path(A, B, mass, mu):
 
     intermediate_count = N - 2
 
-    theta = []
-    phi = []
+    # --------------------------------------------------------
+    # 초기 spherical coordinate
+    # --------------------------------------------------------
 
-    for p in initial_path[1:-1]:
-        t, f = cartesian_to_spherical(p)
-        theta.append(t)
-        phi.append(f)
+    theta_initial = []
+    phi_initial = []
 
-    theta = np.array(theta)
-    phi = np.array(phi)
+    for point in initial_path[1:-1]:
 
-    # 상승량 보조변수
-    dz = np.diff(initial_path[:, 2])
-    uphill_variables = np.maximum(dz, 0)
+        theta, phi = cartesian_to_spherical(
+            point
+        )
+
+        theta_initial.append(theta)
+        phi_initial.append(phi)
+
+    theta_initial = np.array(theta_initial)
+    phi_initial = np.array(phi_initial)
+
+    # --------------------------------------------------------
+    # 상승량 보조 변수
+    # --------------------------------------------------------
+
+    dz = np.diff(
+        initial_path[:, 2]
+    )
+
+    uphill_initial = np.maximum(
+        dz,
+        0.0
+    )
+
+    # --------------------------------------------------------
+    # 전체 초기 변수
+    # --------------------------------------------------------
 
     x0 = np.concatenate([
-        theta,
-        phi,
-        uphill_variables
+        theta_initial,
+        phi_initial,
+        uphill_initial
     ])
 
     # --------------------------------------------------------
@@ -165,66 +215,114 @@ def optimize_path(A, B, mass, mu):
 
     def objective(x):
 
-        points = path_from_angles(A, B, x)
+        path = build_path(
+            A,
+            B,
+            x
+        )
 
-        uphill_vars = x[
+        uphill_variables = x[
             2 * intermediate_count:
         ]
 
-        distances = [
-            surface_distance(points[i], points[i + 1])
-            for i in range(N - 1)
-        ]
+        # 마찰 에너지
+        distances = []
 
-        friction = mu * mass * G * np.sum(distances)
+        for i in range(N - 1):
 
-        uphill = mass * G * np.sum(uphill_vars)
+            distances.append(
+                surface_distance(
+                    path[i],
+                    path[i + 1]
+                )
+            )
+
+        friction = (
+            mu
+            * mass
+            * G
+            * np.sum(distances)
+        )
+
+        # 상승 에너지
+        uphill = (
+            mass
+            * G
+            * np.sum(uphill_variables)
+        )
 
         return uphill + friction
 
     # --------------------------------------------------------
     # 제약조건
     #
-    # u_i >= z_(i+1) - z_i
-    # u_i >= 0
+    # u >= z(i+1) - z(i)
     # --------------------------------------------------------
 
-    def constraints(x):
+    def constraint_function(x):
 
-        points = path_from_angles(A, B, x)
+        path = build_path(
+            A,
+            B,
+            x
+        )
 
-        u = x[
+        uphill_variables = x[
             2 * intermediate_count:
         ]
 
-        dz = np.diff(points[:, 2])
+        dz = np.diff(
+            path[:, 2]
+        )
 
-        return u - dz
+        return uphill_variables - dz
 
-    # phi는 0 ~ pi
+    # --------------------------------------------------------
+    # 변수 범위
+    # --------------------------------------------------------
+
     bounds = []
 
     # theta
     for _ in range(intermediate_count):
-        bounds.append((-10 * np.pi, 10 * np.pi))
+
+        bounds.append(
+            (-10 * np.pi, 10 * np.pi)
+        )
 
     # phi
     for _ in range(intermediate_count):
-        bounds.append((0, np.pi))
 
-    # uphill auxiliary variables
+        bounds.append(
+            (0.0, np.pi)
+        )
+
+    # 상승량
     for _ in range(N - 1):
-        bounds.append((0, None))
+
+        bounds.append(
+            (0.0, None)
+        )
+
+    # --------------------------------------------------------
+    # SLSQP
+    # --------------------------------------------------------
 
     result = minimize(
+
         objective,
+
         x0,
+
         method="SLSQP",
+
         bounds=bounds,
+
         constraints={
             "type": "ineq",
-            "fun": constraints
+            "fun": constraint_function
         },
+
         options={
             "maxiter": 1000,
             "ftol": 1e-9,
@@ -232,52 +330,65 @@ def optimize_path(A, B, mass, mu):
         }
     )
 
-    optimized_path = path_from_angles(A, B, result.x)
+    # --------------------------------------------------------
+    # 최적 경로
+    # --------------------------------------------------------
 
-    # 실제 물리식으로 다시 계산
-    total, uphill, friction = path_energy(
+    optimized_path = build_path(
+        A,
+        B,
+        result.x
+    )
+
+    # 실제 에너지 계산
+    optimized_energy = calculate_energy(
         optimized_path,
         mass,
         mu
     )
 
-    # 최적화 실패 또는 초기값보다 나쁜 경우
-    # 초기 경로를 결과로 사용
-    initial_energy = path_energy(
+    initial_energy = calculate_energy(
         initial_path,
         mass,
         mu
     )
 
-    if (not result.success) or total > initial_energy[0]:
+    # --------------------------------------------------------
+    # 최적화 결과가 초기 경로보다 나쁜 경우
+    # --------------------------------------------------------
+
+    if (
+        not result.success
+        or optimized_energy[0] > initial_energy[0]
+    ):
+
         optimized_path = initial_path.copy()
 
-        total, uphill, friction = path_energy(
-            optimized_path,
-            mass,
-            mu
-        )
+        final_energy = initial_energy
 
-        success = False
+        optimization_success = False
+
     else:
-        success = True
+
+        final_energy = optimized_energy
+
+        optimization_success = True
 
     return (
         initial_path,
         optimized_path,
-        total,
-        uphill,
-        friction,
+        initial_energy,
+        final_energy,
         result,
-        success
+        optimization_success
     )
 
 
 # ============================================================
-# Plotly 3D 시각화
+# 3D Plotly 그래프
 # ============================================================
 
-def create_figure(
+def create_3d_figure(
     initial_path,
     optimized_path,
     A,
@@ -287,23 +398,48 @@ def create_figure(
     fig = go.Figure()
 
     # --------------------------------------------------------
-    # 구
+    # 구 생성
     # --------------------------------------------------------
 
-    u = np.linspace(0, 2 * np.pi, 60)
-    v = np.linspace(0, np.pi, 30)
+    u = np.linspace(
+        0,
+        2 * np.pi,
+        60
+    )
 
-    x = R * np.outer(np.cos(u), np.sin(v))
-    y = R * np.outer(np.sin(u), np.sin(v))
-    z = R * np.outer(np.ones_like(u), np.cos(v))
+    v = np.linspace(
+        0,
+        np.pi,
+        30
+    )
+
+    x = R * np.outer(
+        np.cos(u),
+        np.sin(v)
+    )
+
+    y = R * np.outer(
+        np.sin(u),
+        np.sin(v)
+    )
+
+    z = R * np.outer(
+        np.ones_like(u),
+        np.cos(v)
+    )
 
     fig.add_trace(
+
         go.Surface(
+
             x=x,
             y=y,
             z=z,
+
             opacity=0.35,
+
             showscale=False,
+
             name="Sphere (구)"
         )
     )
@@ -313,19 +449,26 @@ def create_figure(
     # --------------------------------------------------------
 
     fig.add_trace(
+
         go.Scatter3d(
+
             x=initial_path[:, 0],
             y=initial_path[:, 1],
             z=initial_path[:, 2],
+
             mode="lines+markers",
+
             name="Initial Path (초기 경로)",
+
             line=dict(
                 color="gray",
                 width=3,
                 dash="dot"
             ),
+
             marker=dict(
-                size=3
+                size=3,
+                color="gray"
             )
         )
     )
@@ -335,75 +478,121 @@ def create_figure(
     # --------------------------------------------------------
 
     fig.add_trace(
+
         go.Scatter3d(
+
             x=optimized_path[:, 0],
             y=optimized_path[:, 1],
             z=optimized_path[:, 2],
+
             mode="lines+markers",
+
             name="Optimized Path (최적 경로)",
+
             line=dict(
                 color="red",
                 width=6
             ),
+
             marker=dict(
-                size=4
+                size=4,
+                color="red"
             )
         )
     )
 
     # --------------------------------------------------------
-    # A
+    # 시작점 A
     # --------------------------------------------------------
 
     fig.add_trace(
+
         go.Scatter3d(
+
             x=[A[0]],
             y=[A[1]],
             z=[A[2]],
+
             mode="markers+text",
+
             text=["A"],
+
             textposition="top center",
+
             name="Start A (시작점 A)",
+
             marker=dict(
+
                 size=12,
+
                 color="black",
-                symbol="star"
+
+                # Scatter3d에서 지원되는 모양
+                symbol="diamond"
             )
         )
     )
 
     # --------------------------------------------------------
-    # B
+    # 도착점 B
     # --------------------------------------------------------
 
     fig.add_trace(
+
         go.Scatter3d(
+
             x=[B[0]],
             y=[B[1]],
             z=[B[2]],
+
             mode="markers+text",
+
             text=["B"],
+
             textposition="top center",
+
             name="Goal B (도착점 B)",
+
             marker=dict(
+
                 size=12,
+
                 color="black",
-                symbol="star"
+
+                # Scatter3d에서 지원되는 모양
+                symbol="diamond"
             )
         )
     )
 
+    # --------------------------------------------------------
+    # 그래프 설정
+    # --------------------------------------------------------
+
     fig.update_layout(
-        title="Minimum-Energy Path on a Sphere (구면 위 최소 에너지 경로)",
+
+        title=(
+            "Minimum-Energy Path on a Sphere "
+            "(구면 위 최소 에너지 경로)"
+        ),
+
+        height=700,
+
         scene=dict(
+
             xaxis_title="X",
+
             yaxis_title="Y",
+
             zaxis_title="Z",
+
             aspectmode="cube"
         ),
-        height=700,
+
         legend=dict(
+
             x=0,
+
             y=1
         )
     )
@@ -412,36 +601,65 @@ def create_figure(
 
 
 # ============================================================
-# Streamlit UI
+# Streamlit 기본 설정
 # ============================================================
 
 st.set_page_config(
-    page_title="Spherical Minimum-Energy Simulator",
+
+    page_title=(
+        "Spherical Minimum-Energy Simulator"
+    ),
+
     page_icon="🌐",
+
     layout="wide"
 )
 
+
+# ============================================================
+# 제목
+# ============================================================
+
 st.title(
+
     "Spherical Minimum-Energy Path Simulator "
     "(구면 위 최소 에너지 경로 시뮬레이터)"
 )
 
 st.write(
-    "구의 표면 위에서 시작점 A에서 도착점 B까지 이동할 때 "
-    "중력에 의한 상승 에너지와 마찰 에너지를 고려하여 "
-    "에너지가 작은 경로를 계산합니다."
+
+    """
+    구의 표면 위에서 시작점 A부터 도착점 B까지 이동할 때
+    상승 에너지와 마찰 에너지를 고려하여
+    총 에너지가 작은 경로를 계산합니다.
+    """
 )
+
 
 # ============================================================
 # 사이드바
 # ============================================================
 
-st.sidebar.header("Simulation Settings (시뮬레이션 설정)")
+st.sidebar.header(
+    "Simulation Settings (시뮬레이션 설정)"
+)
 
-st.sidebar.write(f"Sphere Radius R (구 반지름): **{R}**")
-st.sidebar.write(f"Stepping Points N (점 개수): **{N}**")
+st.sidebar.write(
+    f"Sphere Radius R (구 반지름): **{R}**"
+)
 
-st.sidebar.subheader("Point A (시작점 A)")
+st.sidebar.write(
+    f"Stepping Points N (점 개수): **{N}**"
+)
+
+
+# ============================================================
+# A 입력
+# ============================================================
+
+st.sidebar.subheader(
+    "Point A (시작점 A)"
+)
 
 Ax = st.sidebar.number_input(
     "A x",
@@ -461,7 +679,14 @@ Az = st.sidebar.number_input(
     step=0.1
 )
 
-st.sidebar.subheader("Point B (도착점 B)")
+
+# ============================================================
+# B 입력
+# ============================================================
+
+st.sidebar.subheader(
+    "Point B (도착점 B)"
+)
 
 Bx = st.sidebar.number_input(
     "B x",
@@ -481,29 +706,53 @@ Bz = st.sidebar.number_input(
     step=0.1
 )
 
-st.sidebar.subheader("Physics (물리량)")
+
+# ============================================================
+# 물리량
+# ============================================================
+
+st.sidebar.subheader(
+    "Physics (물리량)"
+)
 
 mass = st.sidebar.number_input(
+
     "Mass m (질량, kg)",
+
     min_value=0.001,
+
     value=1.0,
+
     step=0.1
 )
 
 mu = st.sidebar.number_input(
+
     "Friction μ (마찰계수)",
+
     min_value=0.0,
+
     value=0.05,
+
     step=0.01
 )
 
+
+# ============================================================
+# 실행 버튼
+# ============================================================
+
 run = st.sidebar.button(
-    "Run Simulation (시뮬레이션 실행)",
+
+    "Run Simulation "
+    "(시뮬레이션 실행)",
+
     type="primary"
 )
 
+
 # ============================================================
-# 실행
+# 시뮬레이션 실행
 # ============================================================
 
 if run:
@@ -522,18 +771,31 @@ if run:
 
     try:
 
-        A = project_to_sphere(A_raw)
-        B = project_to_sphere(B_raw)
+        # ----------------------------------------------------
+        # 입력점을 구면 위로 투영
+        # ----------------------------------------------------
+
+        A = project_to_sphere(
+            A_raw
+        )
+
+        B = project_to_sphere(
+            B_raw
+        )
+
+        # ----------------------------------------------------
+        # 최적화
+        # ----------------------------------------------------
 
         (
             initial_path,
             optimized_path,
-            total,
-            uphill,
-            friction,
+            initial_energy,
+            final_energy,
             result,
-            success
+            optimization_success
         ) = optimize_path(
+
             A,
             B,
             mass,
@@ -541,84 +803,138 @@ if run:
         )
 
         # ----------------------------------------------------
-        # 투영 결과
+        # 투영된 A/B
         # ----------------------------------------------------
 
         st.subheader(
-            "Projected Points (구면 위로 투영된 점)"
+            "Projected Points "
+            "(구면 위로 투영된 점)"
         )
 
         col1, col2 = st.columns(2)
 
         with col1:
+
             st.write(
-                f"A → "
-                f"({A[0]:.4f}, {A[1]:.4f}, {A[2]:.4f})"
+                f"""
+                **A**
+
+                ({A[0]:.4f},
+                {A[1]:.4f},
+                {A[2]:.4f})
+                """
             )
 
         with col2:
+
             st.write(
-                f"B → "
-                f"({B[0]:.4f}, {B[1]:.4f}, {B[2]:.4f})"
+                f"""
+                **B**
+
+                ({B[0]:.4f},
+                {B[1]:.4f},
+                {B[2]:.4f})
+                """
             )
 
         # ----------------------------------------------------
-        # 에너지
+        # 에너지 계산
+        # ----------------------------------------------------
+
+        initial_total = initial_energy[0]
+
+        final_total = final_energy[0]
+
+        uphill = final_energy[1]
+
+        friction = final_energy[2]
+
+        distance = final_energy[3]
+
+        # ----------------------------------------------------
+        # 결과
         # ----------------------------------------------------
 
         st.subheader(
-            "Energy Result (에너지 결과)"
+            "Energy Result "
+            "(에너지 결과)"
         )
 
         col1, col2, col3 = st.columns(3)
 
         with col1:
+
             st.metric(
                 "Total Energy (전체)",
-                f"{total:.6f} J"
+                f"{final_total:.6f} J"
             )
 
         with col2:
+
             st.metric(
                 "Uphill Energy (상승)",
                 f"{uphill:.6f} J"
             )
 
         with col3:
+
             st.metric(
                 "Friction Energy (마찰)",
                 f"{friction:.6f} J"
             )
 
-        if success:
+        st.write(
+            f"Initial Energy (초기 에너지): "
+            f"**{initial_total:.6f} J**"
+        )
+
+        st.write(
+            f"Final Path Distance (최종 경로 길이): "
+            f"**{distance:.6f} m**"
+        )
+
+        # ----------------------------------------------------
+        # 최적화 상태
+        # ----------------------------------------------------
+
+        if optimization_success:
+
             st.success(
-                "SLSQP optimization completed. "
+                "SLSQP optimization completed successfully. "
                 "(SLSQP 최적화가 완료되었습니다.)"
             )
+
         else:
+
             st.warning(
-                "Optimization did not improve the initial path, "
-                "so the initial path is displayed. "
-                "(최적화 결과가 초기 경로보다 좋지 않아 초기 경로를 표시합니다.)"
+                "최적화 결과가 초기 경로보다 좋지 않아 "
+                "초기 경로를 최종 결과로 사용했습니다."
             )
 
         # ----------------------------------------------------
-        # 3D
+        # 3D 시뮬레이션
         # ----------------------------------------------------
 
         st.subheader(
-            "3D Simulation (3차원 시뮬레이션)"
+            "3D Simulation "
+            "(3차원 시뮬레이션)"
         )
 
-        fig = create_figure(
+        fig = create_3d_figure(
+
             initial_path,
+
             optimized_path,
+
             A,
+
             B
         )
 
         st.plotly_chart(
+
             fig,
+
             use_container_width=True
         )
 
@@ -627,33 +943,95 @@ if run:
         # ----------------------------------------------------
 
         st.subheader(
-            "Optimization Information (최적화 정보)"
+            "Optimization Information "
+            "(최적화 정보)"
         )
 
         st.write(
-            f"- Method: **SLSQP**"
+            f"**Method:** SLSQP"
         )
 
         st.write(
-            f"- Iterations: **{result.nit}**"
+            f"**Number of points:** {N}"
         )
 
         st.write(
-            f"- Function evaluations: **{result.nfev}**"
+            f"**Iterations:** {result.nit}"
         )
 
         st.write(
-            f"- Sphere constraint: "
-            f"all points remain on R = {R}"
+            f"**Function evaluations:** {result.nfev}"
         )
 
-    except ValueError as e:
+        st.write(
+            f"**Sphere radius:** {R}"
+        )
 
-        st.error(str(e))
+        # ----------------------------------------------------
+        # 에너지 비교 그래프
+        # ----------------------------------------------------
+
+        st.subheader(
+            "Energy Comparison "
+            "(에너지 비교)"
+        )
+
+        energy_fig = go.Figure()
+
+        energy_fig.add_trace(
+
+            go.Bar(
+
+                x=[
+                    "Initial Path (초기 경로)",
+                    "Optimized Path (최적 경로)"
+                ],
+
+                y=[
+                    initial_total,
+                    final_total
+                ],
+
+                text=[
+                    f"{initial_total:.4f} J",
+                    f"{final_total:.4f} J"
+                ],
+
+                textposition="auto"
+            )
+        )
+
+        energy_fig.update_layout(
+
+            title=(
+                "Initial vs Optimized Energy "
+                "(초기 경로와 최적 경로의 에너지 비교)"
+            ),
+
+            yaxis_title="Energy (J)",
+
+            height=450
+        )
+
+        st.plotly_chart(
+
+            energy_fig,
+
+            use_container_width=True
+        )
+
+    except ValueError as error:
+
+        st.error(
+            str(error)
+        )
 
 else:
 
     st.info(
-        "왼쪽에서 A, B와 물리량을 설정한 후 "
-        "**Run Simulation** 버튼을 눌러주세요."
+        """
+        왼쪽에서 시작점 A와 도착점 B를 입력하고
+        질량과 마찰계수를 설정한 뒤
+        **Run Simulation (시뮬레이션 실행)** 버튼을 눌러주세요.
+        """
     )
