@@ -45,14 +45,19 @@ with col_btn:
     st.write(" ") 
     run_button = st.button("🚀 최적화 실행", type="primary", use_container_width=True)
 
-# 구 반지름 및 물리 상수
-R = 5.0  
+# 구 반지름 및 물리 상수 계산 (입력된 점들의 거리를 기반으로 구 반지름 자동 보정)
+raw_A = np.array([xA, yA, zA], dtype=float)
+raw_B = np.array([xB, yB, zB], dtype=float)
+R = float(np.mean([np.linalg.norm(raw_A), np.linalg.norm(raw_B)]))
+if R == 0:
+    R = 5.0
+
 g = 9.81 
 N_POINTS = 15 # 중간 제어점 개수
 
 def project_to_sphere(p):
     """단일 점 또는 점들의 집합을 반지름 R 구면 위로 투영"""
-    p = np.array(p)
+    p = np.array(p, dtype=float)
     if p.ndim == 1:
         norm = np.linalg.norm(p)
         return p * (R / norm) if norm > 0 else p
@@ -62,8 +67,8 @@ def project_to_sphere(p):
         return p * (R / norms)
 
 # 입력 좌표를 정확히 구면 표면 좌표로 정규화
-ptA = project_to_sphere([xA, yA, zA])
-ptB = project_to_sphere([xB, yB, zB])
+ptA = project_to_sphere(raw_A)
+ptB = project_to_sphere(raw_B)
 
 def calculate_path_energy(P_flat, pA, pB, m, mu_val):
     """에너지 계산 (오르막 위치에너지 + 마찰 손실 에너지)"""
@@ -104,14 +109,14 @@ def get_initial_path(pA, pB, mode="geodesic"):
     t = np.linspace(0, 1, N_POINTS + 2)[1:-1] # 양 끝점 제외한 내적점
     
     if mode == "geodesic":
-        # pA와 pB를 잇는 직진 선분 생성 후 구면 투영
+        # 구면 위 대원 경로를 따르는 부드러운 보간
         x = (1 - t) * pA[0] + t * pB[0]
         y = (1 - t) * pA[1] + t * pB[1]
         z = (1 - t) * pA[2] + t * pB[2]
     elif mode == "horizontal_detour":
         # 측면으로 볼록하게 우회하는 경로 생성
         x = (1 - t) * pA[0] + t * pB[0]
-        y = (1 - t) * pA[1] + t * pB[1] + np.sin(np.pi * t) * 4.0
+        y = (1 - t) * pA[1] + t * pB[1] + np.sin(np.pi * t) * 3.0
         z = (1 - t) * pA[2] + t * pB[2]
 
     P_init = np.column_stack((x, y, z))
@@ -127,7 +132,7 @@ if run_button or "best_path_flat" not in st.session_state:
         if "기존 방식" in algo_option:
             # 단일 SLSQP (직진 경로 초기값)
             p0 = get_initial_path(ptA, ptB, "geodesic")
-            res = minimize(objective, p0, method='SLSQP', options={'maxiter': 50, 'ftol': 1e-3})
+            res = minimize(objective, p0, method='SLSQP', options={'maxiter': 100, 'ftol': 1e-6})
             best_path_flat = res.x
             n_iter = res.nit
         elif "Multi-start" in algo_option:
@@ -139,7 +144,7 @@ if run_button or "best_path_flat" not in st.session_state:
             
             for cand in candidates:
                 p0 = get_initial_path(ptA, ptB, cand)
-                res = minimize(objective, p0, method='SLSQP', options={'maxiter': 50, 'ftol': 1e-3})
+                res = minimize(objective, p0, method='SLSQP', options={'maxiter': 100, 'ftol': 1e-6})
                 total_nit += res.nit
                 if res.fun < best_val:
                     best_val = res.fun
@@ -148,7 +153,7 @@ if run_button or "best_path_flat" not in st.session_state:
         else:
             # Differential Evolution (전역 최적화)
             bounds = [(-R, R)] * (N_POINTS * 3)
-            res = differential_evolution(objective, bounds, maxiter=25, popsize=8, seed=42)
+            res = differential_evolution(objective, bounds, maxiter=40, popsize=10, seed=42, polish=True)
             best_path_flat = res.x
             n_iter = res.nit
 
@@ -158,6 +163,7 @@ if run_button or "best_path_flat" not in st.session_state:
         st.session_state["n_iter"] = n_iter
         st.session_state["ptA"] = ptA
         st.session_state["ptB"] = ptB
+        st.session_state["R"] = R
 
 # 세션 데이터 불러오기
 best_path_flat = st.session_state["best_path_flat"]
@@ -165,6 +171,7 @@ init_path_geodesic = st.session_state["init_path_geodesic"]
 n_iter = st.session_state["n_iter"]
 ptA = st.session_state["ptA"]
 ptB = st.session_state["ptB"]
+R = st.session_state["R"]
 
 tot_e, climb_e, fric_e = calculate_path_energy(best_path_flat, ptA, ptB, mass, mu)
 
