@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="구면 표면 최소 에너지 경로 시뮬레이터", layout="wide")
 
 st.title("🌐 구면 표면 최소 에너지 경로 (Minimum-energy surface path)")
-st.markdown("경로가 꼬이지 않도록 제어점을 최적화하고 깔끔하게 시각화합니다.")
+st.markdown("이동 거리와 수직항력을 분리하고, 초기 대원 경로를 매끄럽게 시각화합니다.")
 
 # ---------------------------------------------------------
 # Top Input Panel
@@ -70,7 +70,6 @@ theta_B = np.arctan2(By, Bx)
 dtheta = (theta_B - theta_A + np.pi) % (2 * np.pi) - np.pi
 theta_target = theta_A + dtheta
 
-# 경로 꼬임 방지를 위해 제어점 개수를 3개로 최적화
 num_intermediate = 3  
 N_points = 150
 t_arr = np.linspace(0, 1, N_points)
@@ -108,15 +107,22 @@ def calculate_path_energy(phi_nodes):
     E_total = E_rise + E_friction
     return E_total, E_rise, E_friction, total_length, N_avg, x, y, z
 
-# 대원 경로 초기화
+# 대원 경로 초기화 및 매끄러운 시각화를 위한 고해상도 생성
 uA = np.array([Ax, Ay, Az]) / (RA if RA > 0 else 1)
 uB = np.array([Bx, By, Bz]) / (RB if RB > 0 else 1)
-t_vals = np.linspace(0, 1, num_intermediate + 2)
-init_path_3d = np.array([(1 - t) * uA + t * uB for t in t_vals])
-init_path_3d = init_path_3d / np.linalg.norm(init_path_3d, axis=1, keepdims=True) * R
-init_phi_nodes = np.arcsin(np.clip(init_path_3d[:, 2] / R, -1.0, 1.0))
 
-e_init_tot, _, _, init_L, init_N, init_x, init_y, init_z = calculate_path_energy(init_phi_nodes)
+t_vals = np.linspace(0, 1, num_intermediate + 2)
+init_path_3d_ctrl = np.array([(1 - t) * uA + t * uB for t in t_vals])
+init_path_3d_ctrl = init_path_3d_ctrl / np.linalg.norm(init_path_3d_ctrl, axis=1, keepdims=True) * R
+init_phi_nodes = np.arcsin(np.clip(init_path_3d_ctrl[:, 2] / R, -1.0, 1.0))
+
+# 회색선(초기 경로)을 조밀한 150개 포인트로 매끄럽게 렌더링
+t_dense = np.linspace(0, 1, N_points)
+init_dense_3d = np.array([(1 - t) * uA + t * uB for t in t_dense])
+init_dense_3d = init_dense_3d / np.linalg.norm(init_dense_3d, axis=1, keepdims=True) * R
+init_x, init_y, init_z = init_dense_3d[:, 0], init_dense_3d[:, 1], init_dense_3d[:, 2]
+
+e_init_tot, _, _, init_L, init_N, _, _, _ = calculate_path_energy(init_phi_nodes)
 
 # ---------------------------------------------------------
 # Optimization Execution Logic
@@ -215,7 +221,6 @@ with tab1:
         line=dict(color='gray', width=3, dash='dash'),
         name='Initial projected path'
     ))
-    # 빨간 점 크기를 줄이고 선을 부드럽게 표시
     fig.add_trace(go.Scatter3d(
         x=res['px'], y=res['py'], z=res['pz'], mode='lines+markers',
         line=dict(color='crimson', width=4),
@@ -230,7 +235,7 @@ with tab1:
     fig.add_trace(go.Scatter3d(x=[xB], y=[yB], z=[zB], mode='markers+text', marker=dict(size=8, color='green'), text=['B (도착점)'], name='B (도착점)'))
 
     fig.update_layout(
-        title=dict(text="<b>Minimum-energy surface path (구면 표면 최소 에너지 경로 잔상 해결)</b>", font=dict(size=16)),
+        title=dict(text="<b>Minimum-energy surface path (매끄러운 대원 경로 및 최적화)</b>", font=dict(size=16)),
         scene=dict(xaxis_title='x', yaxis_title='y', zaxis_title='z', aspectmode='data'),
         legend=dict(x=0.02, y=0.98, bgcolor='rgba(255,255,255,0.7)'),
         height=600, margin=dict(l=10, r=10, b=10, t=40)
