@@ -277,6 +277,3 @@ with tab2:
     ax.set_title("Minimum-energy surface path (3D)")
     ax.legend(loc='upper left')
     st.pyplot(fig_mpl)
-```
-
-이제 최적화 실행 후 브라우저 그래픽 지원 여부와 관계없이 3D 시각화 경로가 안정적으로 표시됩니다.
