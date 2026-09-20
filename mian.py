@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="구면 표면 최소 에너지 경로 시뮬레이터", layout="wide")
 
 st.title("🌐 구면 표면 최소 에너지 경로 (Minimum-energy surface path)")
-st.markdown("이동 거리($L$)와 수직항력($N$)을 분리하여 마찰 에너지 및 총 에너지를 정밀 계산합니다.")
+st.markdown("경로가 꼬이지 않도록 제어점을 최적화하고 깔끔하게 시각화합니다.")
 
 # ---------------------------------------------------------
 # Top Input Panel
@@ -70,7 +70,8 @@ theta_B = np.arctan2(By, Bx)
 dtheta = (theta_B - theta_A + np.pi) % (2 * np.pi) - np.pi
 theta_target = theta_A + dtheta
 
-num_intermediate = 7
+# 경로 꼬임 방지를 위해 제어점 개수를 3개로 최적화
+num_intermediate = 3  
 N_points = 150
 t_arr = np.linspace(0, 1, N_points)
 theta_arr = np.linspace(theta_A, theta_target, N_points)
@@ -92,23 +93,18 @@ def calculate_path_energy(phi_nodes):
     delta_h = max(0.0, z_max - z[0])
     E_rise = m * g * delta_h
     
-    # 2. 이동 거리 및 미소 구간별 수직항력 분리 계산
+    # 2. 이동 거리 및 수직항력 분리 계산
     dx = np.diff(x)
     dy = np.diff(y)
     dz = np.diff(z)
     ds_arr = np.sqrt(dx**2 + dy**2 + dz**2)
-    total_length = np.sum(ds_arr)  # L (이동 거리)
+    total_length = np.sum(ds_arr)
     
-    # 각 지점에서의 수직항력 N = m * g * cos(phi)
     phi_mid = (phi_arr[:-1] + phi_arr[1:]) / 2.0
     N_arr = m * g * np.cos(phi_mid)
-    
-    # 평균 수직항력 N_avg 산출
     N_avg = np.sum(N_arr * ds_arr) / total_length if total_length > 0 else m * g
     
-    # 마찰 에너지 = μ * N_avg * L
     E_friction = mu * N_avg * total_length
-    
     E_total = E_rise + E_friction
     return E_total, E_rise, E_friction, total_length, N_avg, x, y, z
 
@@ -120,14 +116,13 @@ init_path_3d = np.array([(1 - t) * uA + t * uB for t in t_vals])
 init_path_3d = init_path_3d / np.linalg.norm(init_path_3d, axis=1, keepdims=True) * R
 init_phi_nodes = np.arcsin(np.clip(init_path_3d[:, 2] / R, -1.0, 1.0))
 
-# 초기 상태 계산
 e_init_tot, _, _, init_L, init_N, init_x, init_y, init_z = calculate_path_energy(init_phi_nodes)
 
 # ---------------------------------------------------------
 # Optimization Execution Logic
 # ---------------------------------------------------------
 bounds = [(-np.pi/2 + 0.05, np.pi/2 - 0.05)] * num_intermediate
-opt_options = {'maxiter': 60, 'ftol': 1e-4}
+opt_options = {'maxiter': 100, 'ftol': 1e-6}
 
 def objective_func(phi_mid):
     phi_full = np.concatenate([[phi_A], phi_mid, [phi_B]])
@@ -149,7 +144,7 @@ if "has_run" not in st.session_state or run_opt:
             candidates = [
                 init_phi_nodes[1:-1],
                 np.full(num_intermediate, (phi_A + phi_B)/2),
-                np.linspace(phi_A, np.pi/3, num_intermediate),
+                np.linspace(phi_A, np.pi/4, num_intermediate),
                 np.full(num_intermediate, 0.0)
             ]
             best_e = float('inf')
@@ -164,7 +159,7 @@ if "has_run" not in st.session_state or run_opt:
             
         else:
             res = opt.differential_evolution(
-                objective_func, bounds=bounds, seed=42, maxiter=100, popsize=12, polish=True
+                objective_func, bounds=bounds, seed=42, maxiter=100, popsize=15, polish=True
             )
             best_phi_mid = res.x
             iterations = res.nit
@@ -192,7 +187,6 @@ st.success(
     f"**총 에너지 = {res['e_tot']:.4f} J** (오르막 {res['e_rise']:.4f} J + 마찰 {res['e_fric']:.4f} J)"
 )
 
-# 이동 거리와 수직항력 분리 표시 메트릭
 c1, c2, c3 = st.columns(3)
 with c1:
     st.metric(label="📏 이동 거리 (L)", value=f"{res['path_len']:.3f} m")
@@ -217,13 +211,15 @@ with tab1:
 
     fig.add_trace(go.Surface(x=sx, y=sy, z=sz, opacity=0.30, colorscale='Blues', showscale=False, hoverinfo='skip'))
     fig.add_trace(go.Scatter3d(
-        x=init_x, y=init_y, z=init_z, mode='lines+markers',
-        line=dict(color='gray', width=3, dash='dash'), marker=dict(size=2, color='gray'),
+        x=init_x, y=init_y, z=init_z, mode='lines',
+        line=dict(color='gray', width=3, dash='dash'),
         name='Initial projected path'
     ))
+    # 빨간 점 크기를 줄이고 선을 부드럽게 표시
     fig.add_trace(go.Scatter3d(
         x=res['px'], y=res['py'], z=res['pz'], mode='lines+markers',
-        line=dict(color='crimson', width=5), marker=dict(size=3.5, color='crimson'),
+        line=dict(color='crimson', width=4),
+        marker=dict(size=2.0, color='crimson'),
         name='Optimized path'
     ))
 
@@ -234,7 +230,7 @@ with tab1:
     fig.add_trace(go.Scatter3d(x=[xB], y=[yB], z=[zB], mode='markers+text', marker=dict(size=8, color='green'), text=['B (도착점)'], name='B (도착점)'))
 
     fig.update_layout(
-        title=dict(text="<b>Minimum-energy surface path (구면 표면 최소 에너지 경로)</b>", font=dict(size=16)),
+        title=dict(text="<b>Minimum-energy surface path (구면 표면 최소 에너지 경로 잔상 해결)</b>", font=dict(size=16)),
         scene=dict(xaxis_title='x', yaxis_title='y', zaxis_title='z', aspectmode='data'),
         legend=dict(x=0.02, y=0.98, bgcolor='rgba(255,255,255,0.7)'),
         height=600, margin=dict(l=10, r=10, b=10, t=40)
@@ -255,7 +251,7 @@ with tab2:
     ax.plot_surface(sx_m, sy_m, sz_m, color='lightblue', alpha=0.25, edgecolor='none')
     ax.plot(init_x, init_y, init_z, color='gray', linestyle='--', linewidth=1.5, label='Initial path')
     ax.plot(res['px'], res['py'], res['pz'], color='crimson', linewidth=2.5, label='Optimized path')
-    ax.scatter(res['px'], res['py'], res['pz'], color='crimson', s=12)
+    ax.scatter(res['px'], res['py'], res['pz'], color='crimson', s=8)
     ax.scatter([xA], [yA], [zA], color='blue', s=60, label='A (Start)')
     ax.scatter([xB], [yB], [zB], color='green', s=60, label='B (End)')
 
@@ -266,4 +262,3 @@ with tab2:
     ax.legend(loc='upper left')
     st.pyplot(fig_mpl)
     plt.close(fig_mpl)
-    
