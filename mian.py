@@ -52,7 +52,7 @@ N_POINTS = 20 # 제어점 수
 
 # --- Helper Functions ---
 def enforce_sphere_constraint(P_flat):
-    """1차원/2차원 배열을 구면 표면(반지름 R)으로 정렬 후 1차원 또는 2차원으로 반환"""
+    """경로 점들을 구면 표면(반지름 R)으로 정렬"""
     P = np.array(P_flat).reshape((-1, 3))
     norms = np.linalg.norm(P, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
@@ -95,7 +95,7 @@ def calculate_path_energy(P_flat, xA, yA, zA, xB, yB, zB, m, mu_val):
     return total_energy, climb_energy, friction_energy
 
 def get_initial_path(mode="geodesic"):
-    """초기 경로 생성 함수 - 반드시 1차원 Vector (.flatten()) 형태로 반환"""
+    """초기 경로 생성 함수"""
     t = np.linspace(0, 1, N_POINTS + 2)[1:-1]
     
     if mode == "geodesic":
@@ -116,60 +116,58 @@ def get_initial_path(mode="geodesic"):
         z = (1 - t) * zA + t * zB
 
     P_init = np.column_stack((x, y, z))
-    # 핵심 수정: 반드시 1차원 배열(.flatten())로 반환하여 minimize 1D 오류 방지
     return enforce_sphere_constraint(P_init).flatten()
 
-# --- 최적화 실행 조건 ---
-if run_button or "optimized" not in st.session_state:
-    
-    # 시작점/도착점 구면 정렬
-    normA = np.linalg.norm([xA, yA, zA])
-    normB = np.linalg.norm([xB, yB, zB])
-    xA_p, yA_p, zA_p = np.array([xA, yA, zA]) * (R / normA) if normA > 0 else (xA, yA, zA)
-    xB_p, yB_p, zB_p = np.array([xB, yB, zB]) * (R / normB) if normB > 0 else (xB, yB, zB)
+# --- 최적화 실행 로직 ---
+# 처음 켜졌거나, 버튼을 누르면 연산을 재실행하도록 처리
+if run_button or "best_path_flat" not in st.session_state:
+    with st.spinner("경로 최적화 계산 중... 잠시만 기다려주세요."):
+        # 시작점/도착점 구면 정렬
+        normA = np.linalg.norm([xA, yA, zA])
+        normB = np.linalg.norm([xB, yB, zB])
+        xA_p, yA_p, zA_p = np.array([xA, yA, zA]) * (R / normA) if normA > 0 else (xA, yA, zA)
+        xB_p, yB_p, zB_p = np.array([xB, yB, zB]) * (R / normB) if normB > 0 else (xB, yB, zB)
 
-    def objective(P_flat):
-        tot, _, _ = calculate_path_energy(P_flat, xA_p, yA_p, zA_p, xB_p, yB_p, zB_p, mass, mu)
-        return tot
+        def objective(P_flat):
+            tot, _, _ = calculate_path_energy(P_flat, xA_p, yA_p, zA_p, xB_p, yB_p, zB_p, mass, mu)
+            return tot
 
-    init_path_geodesic = get_initial_path("geodesic")
+        init_path_geodesic = get_initial_path("geodesic")
 
-    if "기존" in algo_option:
-        # 단일 SLSQP
-        res = minimize(objective, init_path_geodesic, method='SLSQP', options={'maxiter': 300})
-        best_path_flat = res.x
-        n_iter = res.nit
-        success = res.success
-    elif "Multi-start" in algo_option:
-        # Multi-start SLSQP
-        candidates = ["geodesic", "horizontal_front", "horizontal_back"]
-        best_val = float('inf')
-        best_path_flat = None
-        total_nit = 0
-        
-        for cand in candidates:
-            p0 = get_initial_path(cand) # 1차원 벡터
-            res = minimize(objective, p0, method='SLSQP', options={'maxiter': 200})
-            total_nit += res.nit
-            if res.fun < best_val:
-                best_val = res.fun
-                best_path_flat = res.x
-        n_iter = total_nit
-    else:
-        # Differential Evolution
-        bounds = [(-R, R)] * (N_POINTS * 3)
-        res = differential_evolution(objective, bounds, maxiter=50, popsize=10, seed=42)
-        best_path_flat = res.x
-        n_iter = res.nit
+        if "기존" in algo_option:
+            # 단일 SLSQP
+            res = minimize(objective, init_path_geodesic, method='SLSQP', options={'maxiter': 300})
+            best_path_flat = res.x
+            n_iter = res.nit
+        elif "Multi-start" in algo_option:
+            # Multi-start SLSQP
+            candidates = ["geodesic", "horizontal_front", "horizontal_back"]
+            best_val = float('inf')
+            best_path_flat = None
+            total_nit = 0
+            
+            for cand in candidates:
+                p0 = get_initial_path(cand)
+                res = minimize(objective, p0, method='SLSQP', options={'maxiter': 200})
+                total_nit += res.nit
+                if res.fun < best_val:
+                    best_val = res.fun
+                    best_path_flat = res.x
+            n_iter = total_nit
+        else:
+            # Differential Evolution
+            bounds = [(-R, R)] * (N_POINTS * 3)
+            res = differential_evolution(objective, bounds, maxiter=30, popsize=8, seed=42)
+            best_path_flat = res.x
+            n_iter = res.nit
 
-    # 결과 세션 저장
-    st.session_state["optimized"] = True
-    st.session_state["best_path_flat"] = best_path_flat
-    st.session_state["init_path_geodesic"] = init_path_geodesic
-    st.session_state["n_iter"] = n_iter
-    st.session_state["pts"] = (xA_p, yA_p, zA_p, xB_p, yB_p, zB_p)
+        # 결과를 session_state에 보관
+        st.session_state["best_path_flat"] = best_path_flat
+        st.session_state["init_path_geodesic"] = init_path_geodesic
+        st.session_state["n_iter"] = n_iter
+        st.session_state["pts"] = (xA_p, yA_p, zA_p, xB_p, yB_p, zB_p)
 
-# --- 결과 데이터 계산 ---
+# --- 저장된 결과 불러오기 및 계산 ---
 best_path_flat = st.session_state["best_path_flat"]
 init_path_geodesic = st.session_state["init_path_geodesic"]
 n_iter = st.session_state["n_iter"]
@@ -184,8 +182,8 @@ st.success(
 )
 
 # --- 3. 3D Plotly 시각화 ---
-u = np.linspace(0, 2 * np.pi, 50)
-v = np.linspace(0, np.pi, 50)
+u = np.linspace(0, 2 * np.pi, 40)
+v = np.linspace(0, np.pi, 40)
 x_sphere = R * np.outer(np.cos(u), np.sin(v))
 y_sphere = R * np.outer(np.sin(u), np.sin(v))
 z_sphere = R * np.outer(np.ones(np.size(u)), np.cos(v))
@@ -198,16 +196,16 @@ full_opt = np.vstack(([xA_p, yA_p, zA_p], P_opt_arr, [xB_p, yB_p, zB_p]))
 
 fig = go.Figure()
 
-# 구면 (반투명 파란색)
+# 구면
 fig.add_trace(go.Surface(
     x=x_sphere, y=y_sphere, z=z_sphere,
     colorscale=[[0, '#3366cc'], [1, '#3366cc']],
-    opacity=0.3,
+    opacity=0.25,
     showscale=False,
     hoverinfo='skip'
 ))
 
-# 초기 경로
+# 초기 투영 경로
 fig.add_trace(go.Scatter3d(
     x=full_init[:, 0], y=full_init[:, 1], z=full_init[:, 2],
     mode='lines+markers',
