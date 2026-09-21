@@ -267,3 +267,60 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+# --- 4. 초기 경로와 최적화 경로 비교표 ---
+
+# 초기 직진 경로 에너지 계산
+init_tot_e, init_climb_e, init_fric_e, init_path_len, _ = calculate_path_energy(
+    init_path_geodesic, ptA, ptB, mass, mu
+)
+
+# 최적화 경로 에너지 계산
+opt_tot_e, opt_climb_e, opt_fric_e, opt_path_len, _ = calculate_path_energy(
+    best_path_flat, ptA, ptB, mass, mu
+)
+
+# 비교표 데이터
+comparison_data = {
+    "경로": [
+        "초기 직진 경로",
+        "최적화 경로"
+    ],
+    "이동 거리 (m)": [
+        init_path_len,
+        opt_path_len
+    ],
+    "오르막 에너지 (J)": [
+        init_climb_e,
+        opt_climb_e
+    ],
+    "마찰 손실 에너지 (J)": [
+        init_fric_e,
+        opt_fric_e
+    ],
+    "총 에너지 (J)": [
+        init_tot_e,
+        opt_tot_e
+    ]
+}
+
+st.subheader("초기 경로와 최적화 경로 비교")
+
+st.dataframe(
+    comparison_data,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "이동 거리 (m)": st.column_config.NumberColumn(
+            format="%.3f"
+        ),
+        "오르막 에너지 (J)": st.column_config.NumberColumn(
+            format="%.4f"
+        ),
+        "마찰 손실 에너지 (J)": st.column_config.NumberColumn(
+            format="%.4f"
+        ),
+        "총 에너지 (J)": st.column_config.NumberColumn(
+            format="%.4f"
+        )
+    }
+)
